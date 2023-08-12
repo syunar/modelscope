@@ -50,6 +50,7 @@ class SkinRetouchingPipeline(Pipeline):
         local_model_path = os.path.join(self.model, 'joint_20210926.pth')
         skin_model_path = os.path.join(self.model, ModelFile.TF_GRAPH_FILE)
 
+        # generator == Mutual Encoder
         self.generator = UNet(3, 3).to(device)
         self.generator.load_state_dict(
             torch.load(model_path, map_location='cpu')['generator'])
@@ -123,8 +124,8 @@ class SkinRetouchingPipeline(Pipeline):
                 rgb_image_small, resize_scale = resize_on_long_side(
                     rgb_image, 800)
                 skin_mask = self.sess.run(
-                    self.sess.graph.get_tensor_by_name('output_png:0'),
-                    feed_dict={'input_image:0': rgb_image_small})
+                                    self.sess.graph.get_tensor_by_name('output_png:0'),
+                                    feed_dict={'input_image:0': rgb_image_small})
 
             output_pred = torch.from_numpy(rgb_image).to(self.device)
             if return_mg:
@@ -160,14 +161,19 @@ class SkinRetouchingPipeline(Pipeline):
                 roi, expand, crop_tblr = get_roi_without_padding(
                     rgb_image, bbox)
                 roi = roi_to_tensor(roi)  # bgr -> rgb
-
+                # roi คือ รูปที่ crop แล้ว
+                
                 if roi.shape[2] > 0.4 * rgb_image.shape[0]:
                     flag_bigKernal = True
 
                 roi = roi.to(self.device)
 
+                # 1. preprocess (I_l)
                 roi = preprocess_roi(roi)
-
+                
+                # 2. prediction model (retouch) -> ได้ R_l ใน paper ออกจาก LRB (จบ loop LRL)
+                # detection_net == MPB in paper (for predict mask)
+                # inpainting_net == LRB in paper (for retouch local (low res image))
                 if retouch_local and self.local_model_path is not None:
                     roi = self.retouch_local(roi)
 
@@ -209,6 +215,8 @@ class SkinRetouchingPipeline(Pipeline):
 
             sub_image_standard = F.interpolate(
                 image, size=(768, 768), mode='bilinear', align_corners=True)
+            
+            # 1. predict mask (MPB)
             sub_mask_pred = torch.sigmoid(
                 self.detection_net(sub_image_standard))
             sub_mask_pred = F.interpolate(
@@ -254,6 +262,7 @@ class SkinRetouchingPipeline(Pipeline):
 
                 sub_input_image_padding_window = sub_image_padding_window * sub_mask_pred_padding_window
 
+                # 2. retouch (LRB)
                 sub_output_padding_window = self.inpainting_net(
                     sub_input_image_padding_window,
                     sub_mask_pred_padding_window)
@@ -270,6 +279,7 @@ class SkinRetouchingPipeline(Pipeline):
                 w=int(round(sub_W_standard
                             / self.patch_size)))[:, :, :sub_H, :sub_W]
 
+            # return R_l in paper
             return sub_comp
 
     def predict_roi(self,
